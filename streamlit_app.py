@@ -8,24 +8,9 @@ Deploy on Streamlit Cloud:
 3. Connect repo to streamlit.io
 """
 
-import io, csv, datetime, subprocess, sys
-
-# Auto-install missing packages
-def install(pkg):
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg, '-q'])
-
-try:
-    import yfinance
-except ImportError:
-    install('yfinance')
-    import yfinance
-
-try:
-    import requests
-except ImportError:
-    install('requests')
-    import requests
-
+import io, csv, datetime
+import requests
+import yfinance as yf
 import streamlit as st
 
 # ── Page config ────────────────────────────────────────────────────────────
@@ -127,7 +112,6 @@ FALLBACK = {
 
 # ── Data fetchers ──────────────────────────────────────────────────────────
 def _fred_latest(series_id):
-    import requests
     url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=" + series_id
     r = requests.get(url, timeout=25)
     r.raise_for_status()
@@ -138,7 +122,6 @@ def _fred_latest(series_id):
     return None
 
 def _yf_last(ticker):
-    import yfinance as yf
     hist = yf.Ticker(ticker).history(period="5d")
     closes = hist["Close"].dropna() if len(hist) else []
     return float(closes.iloc[-1]) if len(closes) else None
@@ -151,7 +134,6 @@ def _fng_label(score):
     return "Extreme Greed"
 
 def _cnn_fng():
-    import requests
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json, text/plain, */*",
