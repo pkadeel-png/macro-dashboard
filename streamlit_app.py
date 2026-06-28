@@ -8,7 +8,24 @@ Deploy on Streamlit Cloud:
 3. Connect repo to streamlit.io
 """
 
-import io, csv, datetime
+import io, csv, datetime, subprocess, sys
+
+# Auto-install missing packages
+def install(pkg):
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg, '-q'])
+
+try:
+    import yfinance
+except ImportError:
+    install('yfinance')
+    import yfinance
+
+try:
+    import requests
+except ImportError:
+    install('requests')
+    import requests
+
 import streamlit as st
 
 # ── Page config ────────────────────────────────────────────────────────────
