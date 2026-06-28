@@ -1,3 +1,4 @@
-streamlit>=1.28.0
-requests>=2.28.0
-yfinance>=0.2.18
+streamlit==1.32.0
+requests==2.31.0
+yfinance==0.2.37
+pandas==2.1.4
