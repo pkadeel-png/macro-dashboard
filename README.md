@@ -1,3 +1,3 @@
-streamlit
-requests
-yfinance
+streamlit>=1.28.0
+requests>=2.28.0
+yfinance>=0.2.18
