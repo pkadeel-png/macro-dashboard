@@ -105,12 +105,13 @@ h1 { color: #f8fafc !important; }
 # ── Fallback values ────────────────────────────────────────────────────────
 # NOTE: these are ONLY used if a live fetch fails. Inflation fallbacks are
 # rough placeholders — the live FRED values override them on every run.
+# CPI / CORE_CPI fallbacks are now on a MoM % scale (not YoY).
 FALLBACK = {
     "VIX": 18.9,  "VVIX": 91.0,  "SKEW": 145.0, "MOVE": 69.0,
     "FNG": 50,    "FNG_RATING": "Neutral",
     "US10Y": 4.40, "US2Y": 4.13, "T10Y2Y": 0.27, "HYOAS": 2.63,
     "HYG": 79.85, "LQD": 109.50, "DXY": 100.5,
-    "CPI": 2.7,   "CORE_CPI": 3.0, "TRUFLATION": 2.5,
+    "CPI": 0.2,   "CORE_CPI": 0.3, "TRUFLATION": 2.5,
 }
 
 # ── Data fetchers ──────────────────────────────────────────────────────────
@@ -124,10 +125,10 @@ def _fred_latest(series_id):
             return float(row[1])
     return None
 
-def _fred_yoy(series_id):
-    """Fetch a monthly FRED index series and return the latest year-over-year
+def _fred_mom(series_id):
+    """Fetch a monthly FRED index series and return the latest month-over-month
     % change. Used for CPI / Core CPI where FRED publishes the index level
-    and we derive the inflation rate ourselves (12 monthly steps back)."""
+    and we derive the inflation rate ourselves (1 monthly step back)."""
     url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=" + series_id
     r = requests.get(url, timeout=25)
     r.raise_for_status()
@@ -136,12 +137,12 @@ def _fred_yoy(series_id):
     for row in rows[1:]:
         if len(row) >= 2 and row[1] not in (".", "", "NaN"):
             pts.append(float(row[1]))
-    if len(pts) < 13:
+    if len(pts) < 2:
         return None
-    latest, year_ago = pts[-1], pts[-13]
-    if year_ago == 0:
+    latest, prior_month = pts[-1], pts[-2]
+    if prior_month == 0:
         return None
-    return round((latest / year_ago - 1) * 100, 2)
+    return round((latest / prior_month - 1) * 100, 2)
 
 def _yf_last(ticker):
     hist = yf.Ticker(ticker).history(period="5d")
@@ -201,10 +202,10 @@ def gather():
         v = _safe(_fred_latest, sid)
         if v is not None:
             d[key] = v
-    # Inflation — YoY derived from FRED index series (NSA):
+    # Inflation — MoM derived from FRED index series (NSA):
     #   CPIAUCNS = headline CPI, CPILFENS = core CPI (ex food & energy)
     for key, sid in [("CPI","CPIAUCNS"),("CORE_CPI","CPILFENS")]:
-        v = _safe(_fred_yoy, sid)
+        v = _safe(_fred_mom, sid)
         if v is not None:
             d[key] = v
     fng = _safe(_cnn_fng)
@@ -228,10 +229,12 @@ def sig_2y(v):    return _band(v,3.5,4.5,"Low",       "Firm",     "High")
 def sig_hyoas(v): return _band(v,3.5,5.0,"Tight",     "Widening", "Stressed")
 def sig_dxy(v):   return _band(v,100,105,"Weak",      "Moderate", "Strong")
 
-# Inflation signals. Fed target is 2%; growth-stock multiples compress when
-# core stays sticky above ~3%, so core runs a tighter amber band than headline.
-def sig_cpi(v):   return _band(v,2.5,3.5, "Cooling", "Sticky", "Hot")
-def sig_core(v):  return _band(v,2.5,3.0, "Cooling", "Sticky", "Hot")
+# Inflation signals — CPI / Core CPI now on a MoM % scale.
+# A ~0.17%/month pace annualizes to ~2%, so 0.2% is the Fed-target-consistent
+# cutoff. Core runs a tighter amber band than headline since sticky core
+# above ~0.3%/month (~3.5%+ annualized) is what suppresses rate-cut hopes.
+def sig_cpi(v):   return _band(v,0.2,0.4, "Cooling", "Sticky", "Hot")
+def sig_core(v):  return _band(v,0.2,0.3, "Cooling", "Sticky", "Hot")
 def sig_trufl(v): return _band(v,2.5,3.5, "Cooling", "Sticky", "Hot")
 
 def sig_fng(score, rating=""):
@@ -264,8 +267,8 @@ LEVELS = {
     "HY Credit Spread": ("< 3.5%  TIGHT",   "3.5–5%  WIDE",      "> 5%  STRESS"),
     "HYG / LQD":        ("> 0.75  STABLE",  "0.70–0.75  SOFT",   "< 0.70  WEAK"),
     "DXY":              ("< 100  WEAK",     "100–105  MODERATE", "> 105  STRONG"),
-    "CPI (YoY)":        ("< 2.5%  COOLING", "2.5–3.5%  STICKY",  "> 3.5%  HOT"),
-    "Core CPI (YoY)":   ("< 2.5%  COOLING", "2.5–3.0%  STICKY",  "> 3.0%  HOT"),
+    "CPI (MoM)":        ("< 0.2%  COOLING", "0.2–0.4%  STICKY",  "> 0.4%  HOT"),
+    "Core CPI (MoM)":   ("< 0.2%  COOLING", "0.2–0.3%  STICKY",  "> 0.3%  HOT"),
     "Truflation (YoY)": ("< 2.5%  COOLING", "2.5–3.5%  STICKY",  "> 3.5%  HOT"),
 }
 
@@ -508,49 +511,49 @@ def build_analysis(d):
 
     blocks.append('<hr style="border-color:#1e293b;margin:8px 0"/>')
 
-    # CPI (headline, YoY)
+    # CPI (headline, MoM)
     v = d["CPI"]; s = sig_cpi(v)[1]
-    what = "Headline CPI (YoY) is the year-over-year change in the Consumer Price Index for all items — the broadest official measure of US consumer inflation, published monthly by the BLS. It is the number that drives the Fed's policy narrative and rate-cut expectations. Derived here from FRED's CPIAUCNS index. The Fed's long-run target is 2%."
+    what = "Headline CPI (MoM) is the month-over-month change in the Consumer Price Index for all items — the freshest official read on US consumer inflation, published monthly by the BLS. It is more sensitive to the latest month's price moves than the YoY figure, which can lag turning points by smoothing over a full year. Derived here from FRED's CPIAUCNS index. A ~0.17%/month pace annualizes to the Fed's 2% target."
     if s=="green":
-        cur = f"At {v:.1f}% YoY, headline CPI is cooling toward the Fed's 2% target — the disinflation story is intact. This is the environment in which the Fed can justify cutting rates."
+        cur = f"At {v:.2f}% MoM, headline CPI is cooling — the latest month's print is running consistent with or below the Fed's 2% annualized target. This is the environment in which the Fed can justify cutting rates."
         mat = "Cooling headline inflation is a direct tailwind for your rate-sensitive AI supply chain names. Lower inflation supports the case for rate cuts, which lowers the discount rate on future earnings and lifts growth multiples on MU, ONTO, GLW and AAOI."
-        wat = "Watch for any re-acceleration — a single hot print (driven by energy or shelter) can quickly reprice Fed expectations hawkish and hit growth stocks. Headline is noisier than core because of food and energy swings, so confirm with the core read."
+        wat = "Watch for any re-acceleration — a single hot monthly print (driven by energy or shelter) can quickly reprice Fed expectations hawkish and hit growth stocks. MoM is noisier month-to-month than YoY because of seasonal swings, so confirm with the core read and the trend over several prints."
     elif s=="amber":
-        cur = f"At {v:.1f}% YoY, headline CPI is sticky — above target but not alarming. Inflation is proving stubborn, keeping the Fed cautious about cutting too fast."
-        mat = "Sticky headline inflation puts a ceiling on multiple expansion for growth names. The Fed stays on hold longer, keeping the risk-free rate elevated, which raises the hurdle for holding volatile AI positions at full size."
-        wat = "Watch the trend and the core read. If headline is drifting up toward 3.5% while core is also sticky, the rate-cut window closes and you should expect pressure on high-multiple names. Truflation gives you an early read on which way the next print breaks."
+        cur = f"At {v:.2f}% MoM, headline CPI is sticky — running above the pace consistent with 2% annualized, but not alarming on its own. Inflation is proving stubborn, keeping the Fed cautious about cutting too fast."
+        mat = "Sticky monthly headline inflation puts a ceiling on multiple expansion for growth names. The Fed stays on hold longer, keeping the risk-free rate elevated, which raises the hurdle for holding volatile AI positions at full size."
+        wat = "Watch the trend across the next few prints and the core read. If headline keeps printing above 0.3–0.4% MoM while core is also sticky, the rate-cut window closes and you should expect pressure on high-multiple names. Truflation gives you an early read on which way the next print breaks."
     else:
-        cur = f"At {v:.1f}% YoY, headline CPI is hot — inflation is running well above target. This is the environment that forces the Fed to stay restrictive or even re-tighten."
-        mat = "Hot inflation is a clear headwind for your entire growth portfolio. It pushes rate-cut expectations out, lifts the 2Y and 10Y, and compresses valuations on the longest-duration AI names hardest. High-beta positions like AAOI are most exposed."
-        wat = "Watch for a peak and roll-over in the YoY rate. Until inflation is convincingly decelerating, macro is fighting your positions — favour smaller size and tighter stops. A downside surprise from here would be a powerful bullish catalyst."
-    blocks.append(ind_block(s, f"⑫ CPI — Headline Inflation ({v:.1f}% YoY)", what, cur, mat, wat))
+        cur = f"At {v:.2f}% MoM, headline CPI is hot — the latest month's inflation is running well above the pace consistent with target. This is the environment that forces the Fed to stay restrictive or even re-tighten."
+        mat = "Hot monthly inflation is a clear headwind for your entire growth portfolio. It pushes rate-cut expectations out, lifts the 2Y and 10Y, and compresses valuations on the longest-duration AI names hardest. High-beta positions like AAOI are most exposed."
+        wat = "Watch for the next print to cool back down. Until monthly inflation is convincingly decelerating, macro is fighting your positions — favour smaller size and tighter stops. A soft downside surprise from here would be a powerful bullish catalyst."
+    blocks.append(ind_block(s, f"⑫ CPI — Headline Inflation ({v:.2f}% MoM)", what, cur, mat, wat))
 
-    # Core CPI (YoY)
+    # Core CPI (MoM)
     v = d["CORE_CPI"]; s = sig_core(v)[1]
-    what = "Core CPI (YoY) strips out food and energy to reveal the underlying inflation trend. Because it removes the most volatile components, it is the read the Fed watches most closely for the persistent, sticky part of inflation. Derived here from FRED's CPILFENS index. Above roughly 3% it tends to keep rate cuts suppressed."
+    what = "Core CPI (MoM) strips out food and energy to reveal the underlying month-to-month inflation trend. Because it removes the most volatile components and captures the latest month directly, it is the single freshest read the Fed watches most closely for the persistent, sticky part of inflation. Derived here from FRED's CPILFENS index. A pace above roughly 0.3%/month (~3.5%+ annualized) tends to keep rate cuts suppressed."
     if s=="green":
-        cur = f"At {v:.1f}% YoY, core inflation is cooling below the 3% line that matters most — the sticky underlying trend is easing. This is the strongest signal that the Fed has room to cut."
-        mat = "Core under 3% is the single most important inflation condition for your framework. It is the green light for the rate-cut tailwind: falling core plus falling Truflation is when growth and momentum names perform best. Favour your strongest RS names into this backdrop."
-        wat = "Watch that core keeps trending down rather than stalling. A flattening core around 3% would stall the rate-cut narrative even if headline looks fine. Shelter is the largest core component — watch it for the next leg."
+        cur = f"At {v:.2f}% MoM, core inflation is cooling — the latest print is running at a pace consistent with the Fed's target. This is the strongest signal that the Fed has room to cut."
+        mat = "A cool core MoM print is the single most important inflation condition for your framework. It is the green light for the rate-cut tailwind: a falling core pace plus falling Truflation is when growth and momentum names perform best. Favour your strongest RS names into this backdrop."
+        wat = "Watch that the next few core prints keep confirming rather than stalling. A single cool month can be noise — a run of prints in the 0.2%+ zone would stall the rate-cut narrative even if headline looks fine. Shelter is the largest core component — watch it for the next leg."
     elif s=="amber":
-        cur = f"At {v:.1f}% YoY, core inflation is sticky right around the critical 3% zone — the underlying trend is not cooperating. The Fed stays cautious at this level."
-        mat = "This is the level where the rate-cut story stalls. Sticky core keeps the risk-free rate elevated and caps multiple expansion on your AI names. It argues for discipline on new entries and for trimming into strength rather than chasing."
-        wat = "Watch whether core breaks below 2.5% (green light) or above 3% (headwind). This threshold is your key inflation trigger. Pair it with Truflation's direction — if Truflation is falling, core may follow lower in coming prints."
+        cur = f"At {v:.2f}% MoM, core inflation is sticky right around the critical zone — the underlying monthly trend is not cooperating. The Fed stays cautious at this level."
+        mat = "This is the pace where the rate-cut story stalls. Sticky monthly core keeps the risk-free rate elevated and caps multiple expansion on your AI names. It argues for discipline on new entries and for trimming into strength rather than chasing."
+        wat = "Watch whether the next print drops below 0.2% MoM (green light) or climbs above 0.3% (headwind). This monthly threshold is your key inflation trigger. Pair it with Truflation's direction — if Truflation is falling, core may follow lower in the next print."
     else:
-        cur = f"At {v:.1f}% YoY, core inflation is hot — the sticky underlying trend is firmly above the 3% danger line. This keeps the Fed restrictive and rate cuts off the table."
-        mat = "Hot core is the most direct macro headwind for long-duration growth. It suppresses cuts, supports higher yields, and compresses the valuations your AI supply chain thesis depends on. Full-size exposure into hot-and-rising core is fighting the macro."
-        wat = "Watch for core to peak and turn down — that inflection is what unlocks the rate-cut trade and a growth-stock re-rating. Until then, keep size modest and lean on your 2:1 R:R filter for any new positions."
-    blocks.append(ind_block(s, f"⑬ Core CPI — Underlying Inflation ({v:.1f}% YoY)", what, cur, mat, wat))
+        cur = f"At {v:.2f}% MoM, core inflation is hot — the latest monthly print is firmly above the pace consistent with the Fed's comfort zone. This keeps the Fed restrictive and rate cuts off the table."
+        mat = "A hot core MoM print is the most direct macro headwind for long-duration growth. It suppresses cuts, supports higher yields, and compresses the valuations your AI supply chain thesis depends on. Full-size exposure into a hot-and-rising monthly core pace is fighting the macro."
+        wat = "Watch for the next print to cool — that inflection is what unlocks the rate-cut trade and a growth-stock re-rating. Until then, keep size modest and lean on your 2:1 R:R filter for any new positions."
+    blocks.append(ind_block(s, f"⑬ Core CPI — Underlying Inflation ({v:.2f}% MoM)", what, cur, mat, wat))
 
     # Truflation
     v = d["TRUFLATION"]; s = sig_trufl(v)[1]
     trend = d.get("TRUFLATION_TREND", "Flat")
-    what = "Truflation is an independent, daily inflation index built from millions of real-world transaction data points. Because it updates continuously rather than monthly, it tends to move ahead of the official BLS CPI print and acts as an early read on the direction of inflation. (Entered manually here from the free Truflation dashboard, since the API is a paid product.)"
+    what = "Truflation is an independent, daily inflation index built from millions of real-world transaction data points, reported here on a YoY basis. Because it updates continuously rather than monthly, it tends to move ahead of the official BLS CPI print and acts as an early read on the direction of inflation. (Entered manually here from the free Truflation dashboard, since the API is a paid product.)"
     trend_txt = {"Falling":"and trending DOWN", "Rising":"and trending UP", "Flat":"and roughly flat"}[trend]
     if s=="green":
         cur = f"At {v:.1f}% {trend_txt}, Truflation's real-time read is cooling — a leading signal that the next official CPI print may come in soft. Because it leads the BLS data, a low-and-falling Truflation is an early tailwind."
-        mat = "Truflation's value is timing. If it is falling before official CPI confirms, that gives you an early window to lean into your rate-sensitive AI names before the market prices the disinflation in. Falling Truflation + core under 3% is your ideal 'favour growth' regime."
-        wat = "Watch for divergence with official CPI: if Truflation is falling but the BLS print stays sticky, wait for confirmation before sizing up. And watch for Truflation turning back up — it would flag re-acceleration before the official data shows it."
+        mat = "Truflation's value is timing. If it is falling before official CPI confirms, that gives you an early window to lean into your rate-sensitive AI names before the market prices the disinflation in. Falling Truflation + a cool core MoM print is your ideal 'favour growth' regime."
+        wat = "Watch for divergence with official CPI: if Truflation is falling but the BLS monthly print stays sticky, wait for confirmation before sizing up. And watch for Truflation turning back up — it would flag re-acceleration before the official data shows it."
     elif s=="amber":
         cur = f"At {v:.1f}% {trend_txt}, Truflation is in the sticky zone — its real-time read is not yet confirming a clean disinflation path."
         mat = "A sticky Truflation reading tempers the case for adding aggressively. Since it leads official CPI, a stubborn real-time read suggests the next print may not deliver the soft number growth stocks want. Direction matters more than level here — a falling reading is constructive even in this band."
@@ -600,19 +603,19 @@ def build_analysis(d):
 
 # ── Inflation regime helper ────────────────────────────────────────────────
 def inflation_regime(core, trufl_trend):
-    """Combined inflation read using the Fed-watched core CPI level and the
+    """Combined inflation read using the Fed-watched core CPI MoM pace and the
     real-time direction from Truflation. Mirrors the framework: falling
-    Truflation + core under 3% = rate-cut tailwind."""
-    if trufl_trend == "Falling" and core < 3.0:
+    Truflation + a cool core MoM pace (< 0.3%) = rate-cut tailwind."""
+    if trufl_trend == "Falling" and core < 0.3:
         return ("green", "🟢 DISINFLATION",
-                "Real-time inflation is falling and core is under 3% — the rate-cut tailwind is on. "
+                "Real-time inflation is falling and the latest core MoM print is under 0.3% — the rate-cut tailwind is on. "
                 "This is the regime that favours growth and momentum. Lean into your strongest RS names on valid SMC setups.")
-    if trufl_trend == "Rising" and core >= 3.0:
+    if trufl_trend == "Rising" and core >= 0.3:
         return ("red", "🔴 REACCELERATION",
-                "Real-time inflation is rising while core stays sticky above 3% — rate-cut hopes get pushed out. "
+                "Real-time inflation is rising while the latest core MoM print stays sticky at 0.3%+ — rate-cut hopes get pushed out. "
                 "This pressures long-duration growth. Reduce size, tighten stops, and demand a clean 2:1 R:R on anything new.")
     return ("amber", "🟡 MIXED / WAIT",
-            "Inflation signals are mixed — real-time direction and sticky core are not aligned. "
+            "Inflation signals are mixed — real-time direction and the sticky core MoM pace are not aligned. "
             "Wait for confirmation before sizing up. Let the next official print and the Truflation trend resolve first.")
 
 # ── Main app ───────────────────────────────────────────────────────────────
@@ -692,7 +695,7 @@ def main():
     st.markdown('<div class="section-hdr">Inflation & Rate Environment</div>', unsafe_allow_html=True)
 
     # Truflation is a paid API, so it is entered manually from the free
-    # dashboard at truflation.com/dashboard. CPI / Core CPI are live from FRED.
+    # dashboard at truflation.com/dashboard. CPI / Core CPI are live from FRED (MoM).
     ti1, ti2, ti3 = st.columns([1.2, 1.2, 3])
     with ti1:
         trufl_val = st.number_input(
@@ -707,7 +710,7 @@ def main():
     d["TRUFLATION_TREND"] = trufl_trend
 
     # Combined inflation regime badge
-    reg_cls, reg_title, reg_text = inflation_regime(d.get("CORE_CPI", 3.0), trufl_trend)
+    reg_cls, reg_title, reg_text = inflation_regime(d.get("CORE_CPI", 0.3), trufl_trend)
     st.markdown(f"""
 <div class="banner-{reg_cls}" style="padding:12px 18px;margin:4px 0 10px">
   <div class="banner-title-{reg_cls}" style="font-size:14px">{reg_title}</div>
@@ -716,8 +719,8 @@ def main():
 
     c1,c2,c3 = st.columns(3)
     for col, label, desc, val, sig in [
-        (c1,"CPI (YoY)",        "Headline inflation · FRED",    f"{d['CPI']:.1f}%",        sig_cpi(d["CPI"])),
-        (c2,"Core CPI (YoY)",   "Ex food & energy · FRED",      f"{d['CORE_CPI']:.1f}%",   sig_core(d["CORE_CPI"])),
+        (c1,"CPI (MoM)",        "Headline inflation · FRED",    f"{d['CPI']:.2f}%",        sig_cpi(d["CPI"])),
+        (c2,"Core CPI (MoM)",   "Ex food & energy · FRED",      f"{d['CORE_CPI']:.2f}%",   sig_core(d["CORE_CPI"])),
         (c3,"Truflation (YoY)", "Real-time · manual entry",     f"{d['TRUFLATION']:.1f}%", sig_trufl(d["TRUFLATION"])),
     ]:
         with col:
@@ -733,7 +736,7 @@ def main():
 <div style="font-size:11px;color:#334155;font-family:monospace;margin-top:24px;
      padding-top:16px;border-top:1px solid #1e293b;text-align:center">
 VIX · VVIX · SKEW · MOVE · HYG · LQD · DXY via Yahoo Finance &nbsp;·&nbsp;
-10Y · 2Y · HY Spread · CPI · Core CPI via FRED &nbsp;·&nbsp;
+10Y · 2Y · HY Spread · CPI (MoM) · Core CPI (MoM) via FRED &nbsp;·&nbsp;
 Fear & Greed via CNN &nbsp;·&nbsp;
 Truflation via manual entry (free dashboard) &nbsp;·&nbsp;
 Educational only — not financial advice
