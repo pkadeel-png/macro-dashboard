@@ -729,27 +729,7 @@ def main():
     # Reserve a slot at the very top; filled once the Truflation trend is known
     summary_slot = st.container()
 
-    # ── Overall banner ────────────────────────────────────────────────────
     fng_sig   = sig_fng(d["FNG"], d.get("FNG_RATING","-"))
-    all_sigs  = [sig_vix(d["VIX"])[1], sig_vvix(d["VVIX"])[1], sig_skew(d["SKEW"])[1],
-                 sig_move(d["MOVE"])[1], fng_sig[1], sig_10y(d["US10Y"])[1],
-                 sig_2y(d["US2Y"])[1], sig_2s10s(d["T10Y2Y"])[1],
-                 sig_hyoas(d["HYOAS"])[1], sig_dxy(d["DXY"])[1]]
-    reds      = all_sigs.count("red")
-    ambers    = all_sigs.count("amber")
-    overall   = "red" if reds>=2 else "amber" if (reds>=1 or ambers>=3) else "green"
-
-    BANNER_LABELS = {"green":"🟢 RISK ON","amber":"🟡 CAUTION","red":"🔴 RISK OFF"}
-    summaries = {
-        "green": "Macro backdrop is constructive — credit spreads, bond vol, and equity vol all subdued. Supportive for AI supply chain positions. No SMC red flags from macro indicators.",
-        "amber": "Mixed signals across indicators. Caution warranted — consider tightening stops on high-beta AI supply chain names. Monitor HY spreads and MOVE closely.",
-        "red":   "Multiple risk indicators elevated simultaneously. Consider reducing exposure. Wait for macro conditions to stabilise before adding to positions.",
-    }
-    st.markdown(f"""
-<div class="banner-{overall}">
-  <div class="banner-title-{overall}">{BANNER_LABELS[overall]}</div>
-  <div class="banner-text">{summaries[overall]}</div>
-</div>""", unsafe_allow_html=True)
 
     st.markdown("")
 
